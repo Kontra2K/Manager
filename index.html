@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Ledger — Телефони & Ф'ючерси</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --ink:#0B0F14;
+    --surface:#121922;
+    --surface-2:#1A2330;
+    --line: rgba(231,236,239,0.08);
+    --text:#E7ECEF;
+    --muted:#7C8B96;
+    --mint:#2DD9A8;
+    --mint-dim: rgba(45,217,168,0.14);
+    --coral:#FF6B5E;
+    --coral-dim: rgba(255,107,94,0.14);
+    --blue:#5B9CF6;
+    --gold:#E8B94D;
+    --mono: 'IBM Plex Mono', 'SF Mono', ui-monospace, Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html,body{ margin:0; padding:0; height:100%; background: var(--ink); color: var(--text); font-family: var(--sans); overflow-x:hidden; }
+  #app{ max-width:480px; margin:0 auto; min-height:100vh; padding-bottom:96px; position:relative; }
+
+  /* ---------- Header ---------- */
+  .tape{ background: var(--surface); border-bottom: 1px solid var(--line); padding: 18px 18px 20px; position: relative; }
+  .tape::after{
+    content:""; position:absolute; left:0; right:0; bottom:-1px; height:8px;
+    background-image: radial-gradient(circle at 6px 4px, var(--ink) 4px, transparent 4.5px);
+    background-size: 16px 8px; background-repeat: repeat-x;
+  }
+  .month-row{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;}
+  .month-nav{ background:none; border:none; color:var(--muted); font-size:20px; padding:6px 10px; cursor:pointer; line-height:1; }
+  .month-label{ font-size:15px; letter-spacing:0.04em; color:var(--muted); text-transform:uppercase; font-weight:600;}
+  .net-line{ display:flex; align-items:baseline; gap:10px; margin-bottom:2px; }
+  .net-amount{ font-family:var(--mono); font-size:38px; font-weight:600; letter-spacing:-0.01em;}
+  .net-amount.pos{ color:var(--mint);} .net-amount.neg{ color:var(--coral);}
+  .cur-switch{
+    display:flex; background:var(--surface-2); border-radius:8px; overflow:hidden; margin-left:auto; flex-shrink:0;
+  }
+  .cur-switch div{ padding:5px 9px; font-size:11.5px; font-weight:700; color:var(--muted); cursor:pointer; }
+  .cur-switch div.active{ background:var(--mint-dim); color:var(--mint); }
+  .net-caption{ color:var(--muted); font-size:12px; cursor:pointer; }
+  .net-caption b{ color:var(--text); font-weight:600; }
+  .stat-row{ display:flex; gap:8px; margin-top:14px; }
+  .stat-chip{ flex:1; background:var(--surface-2); border-radius:10px; padding:9px 10px; display:flex; flex-direction:column; gap:2px; }
+  .stat-chip .label{ font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; display:flex; align-items:center; gap:4px;}
+  .stat-chip .val{ font-family:var(--mono); font-size:14.5px; font-weight:600;}
+  .stat-chip.phones .val.pos{ color:var(--blue);} .stat-chip.phones .val.neg{ color:var(--coral);}
+  .stat-chip.futures .val.pos{ color:var(--gold);} .stat-chip.futures .val.neg{ color:var(--coral);}
+
+  /* ---------- Tabs / filters ---------- */
+  .tabs{ display:flex; padding:14px 18px 0; gap:6px; }
+  .tab{ flex:1; text-align:center; padding:9px 0; border-radius:10px; font-size:13px; font-weight:600; color:var(--muted); cursor:pointer; border: 1px solid transparent; }
+  .tab.active{ background:var(--surface-2); color:var(--text); border-color: var(--line);}
+  .filters{ display:flex; gap:6px; padding: 12px 18px 0; }
+  .filter-chip{ padding:6px 12px; border-radius:20px; font-size:12px; color:var(--muted); background:var(--surface-2); cursor:pointer; }
+  .filter-chip.active{ color:var(--text); background:var(--surface-2); border:1px solid var(--mint); }
+
+  .view{ padding: 14px 18px 0; } .view.hidden{ display:none; }
+
+  /* ---------- Ledger list ---------- */
+  .day-group{ margin-bottom:18px; }
+  .day-head{ display:flex; justify-content:space-between; align-items:baseline; color:var(--muted); font-size:11.5px; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px; padding: 0 2px; }
+  .entry{ display:flex; align-items:center; gap:10px; padding:10px 4px; border-bottom: 1px dashed var(--line); }
+  .entry:last-child{ border-bottom:none; }
+  .entry .icon{ width:32px; height:32px; border-radius:9px; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:16px; background: var(--surface-2); }
+  .entry .meta{ flex:1; min-width:0; }
+  .entry .cat{ font-size:14.5px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .entry .note{ font-size:11.5px; color:var(--muted); margin-top:1px;}
+  .entry .amt-wrap{ text-align:right; flex-shrink:0; }
+  .entry .amt{ font-family:var(--mono); font-size:14.5px; font-weight:600; white-space:nowrap;}
+  .entry .amt.pos{ color:var(--mint); } .entry .amt.neg{ color:var(--coral); }
+  .entry .amt-eq{ font-family:var(--mono); font-size:10.5px; color:var(--muted); }
+  .entry .del{ background:none; border:none; color:var(--muted); font-size:16px; padding:2px 4px; cursor:pointer; opacity:0.5; }
+  .empty-state{ text-align:center; padding: 60px 20px; color:var(--muted); }
+  .empty-state .big{ font-size:34px; margin-bottom:10px; } .empty-state .sub{ font-size:12.5px; margin-top:4px; }
+
+  /* ---------- Chart view ---------- */
+  .chart-card{ background: var(--surface); border:1px solid var(--line); border-radius: var(--radius); padding:16px; margin-bottom:14px; }
+  .chart-title{ font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:10px;}
+  canvas{ width:100%; display:block; }
+  .src-compare{ display:flex; gap:12px; }
+  .src-col{ flex:1; text-align:center; }
+  .src-col .ic{ font-size:22px; }
+  .src-col .lbl{ font-size:11.5px; color:var(--muted); margin:4px 0; }
+  .src-col .v{ font-family:var(--mono); font-size:16px; font-weight:700; }
+
+  /* ---------- FAB + sheets ---------- */
+  .fab{ position:fixed; left:50%; transform:translateX(-50%); bottom:20px; max-width:448px; width:calc(100% - 36px);
+    background: var(--mint); color:#04211A; border:none; border-radius:14px; font-size:15px; font-weight:700; padding:15px 0; cursor:pointer;
+    box-shadow: 0 8px 24px rgba(45,217,168,0.28); }
+  .sheet-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:20; display:flex; align-items:flex-end; opacity:0; pointer-events:none; transition:opacity .2s; }
+  .sheet-backdrop.open{ opacity:1; pointer-events:auto; }
+  .sheet{ background: var(--surface); width:100%; max-width:480px; margin:0 auto; border-radius: 20px 20px 0 0; padding:16px 18px 26px;
+    transform: translateY(100%); transition: transform .25s ease; border-top:1px solid var(--line); }
+  .sheet-backdrop.open .sheet{ transform:translateY(0); }
+  .sheet-handle{ width:36px; height:4px; background:var(--line); border-radius:2px; margin:0 auto 16px; }
+  .toggle-2{ display:flex; background:var(--surface-2); border-radius:11px; padding:3px; margin-bottom:14px; }
+  .toggle-2 div{ flex:1; text-align:center; padding:9px 0; border-radius:9px; font-size:13.5px; font-weight:700; color:var(--muted); cursor:pointer; }
+  .toggle-2 div.active.phone{ background: rgba(91,156,246,0.14); color:var(--blue); }
+  .toggle-2 div.active.futures{ background: rgba(232,185,77,0.14); color:var(--gold); }
+  .toggle-2 div.active.profit{ background:var(--mint-dim); color:var(--mint); }
+  .toggle-2 div.active.loss{ background:var(--coral-dim); color:var(--coral); }
+  .field-label{ font-size:11.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px; }
+  .text-input{ width:100%; background:var(--surface-2); border:1px solid var(--line); border-radius:10px; color:var(--text); font-size:14.5px;
+    padding:12px 12px; margin-bottom:14px; outline:none; font-family:var(--sans); }
+  .amount-row{ display:flex; align-items:center; justify-content:center; gap:6px; margin-bottom:16px; }
+  .amount-input{ background:none; border:none; color:var(--text); font-family:var(--mono); font-size:38px; font-weight:600; text-align:center; outline:none; width:100%; }
+  .cur-badge{ font-family:var(--mono); font-size:20px; color:var(--muted); }
+  .save-btn{ width:100%; background:var(--mint); color:#04211A; border:none; border-radius:12px; font-size:15px; font-weight:700; padding:14px 0; cursor:pointer; }
+  .save-btn:disabled{ opacity:0.4; }
+  .rate-row{ display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+  .rate-row input{ flex:1; background:var(--surface-2); border:1px solid var(--line); border-radius:10px; color:var(--text); font-family:var(--mono);
+    font-size:18px; padding:10px 12px; outline:none; }
+  .refresh-btn{ background:var(--surface-2); border:1px solid var(--line); color:var(--text); border-radius:10px; padding:10px 14px; font-size:13px; cursor:pointer; white-space:nowrap; }
+  .rate-hint{ font-size:11.5px; color:var(--muted); margin-bottom:16px; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div class="tape">
+    <div class="month-row">
+      <button class="month-nav" id="prevMonth">‹</button>
+      <div class="month-label" id="monthLabel">—</div>
+      <button class="month-nav" id="nextMonth">›</button>
+    </div>
+    <div class="net-line">
+      <span class="net-amount" id="netAmount">$0</span>
+      <div class="cur-switch">
+        <div id="curUSD" class="active">$</div><div id="curUAH">₴</div>
+      </div>
+    </div>
+    <div class="net-caption" id="netCaption">курс 1$ = —₴ · тапни щоб змінити</div>
+    <div class="stat-row">
+      <div class="stat-chip phones"><span class="label">📱 Телефони</span><span class="val" id="totalPhones">0₴</span></div>
+      <div class="stat-chip futures"><span class="label">📈 Ф'ючерси</span><span class="val" id="totalFutures">$0</span></div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="history">Історія</div>
+    <div class="tab" data-tab="chart">Графік</div>
+  </div>
+
+  <div class="view" id="view-history">
+    <div class="filters">
+      <div class="filter-chip active" data-filter="all">Усі</div>
+      <div class="filter-chip" data-filter="phone">📱 Телефони</div>
+      <div class="filter-chip" data-filter="futures">📈 Ф'ючерси</div>
+    </div>
+    <div id="ledgerList"></div>
+  </div>
+
+  <div class="view hidden" id="view-chart">
+    <div class="chart-card">
+      <div class="chart-title">Динаміка по днях (в $, конвертовано)</div>
+      <canvas id="dailyChart" height="140"></canvas>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Телефони vs Ф'ючерси (еквівалент у $)</div>
+      <div class="src-compare">
+        <div class="src-col"><div class="ic">📱</div><div class="lbl">Телефони</div><div class="v" id="cmpPhones">$0</div></div>
+        <div class="src-col"><div class="ic">📈</div><div class="lbl">Ф'ючерси</div><div class="v" id="cmpFutures">$0</div></div>
+      </div>
+    </div>
+  </div>
+
+  <button class="fab" id="openAdd">+ Додати запис</button>
+
+  <!-- Add entry sheet -->
+  <div class="sheet-backdrop" id="sheetBackdrop">
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <div class="toggle-2" id="sourceToggle">
+        <div class="active phone" data-source="phone">📱 Телефон</div>
+        <div class="futures" data-source="futures">📈 Ф'ючерс</div>
+      </div>
+      <div class="toggle-2" id="signToggle">
+        <div class="active profit" data-sign="profit">Прибуток</div>
+        <div class="loss" data-sign="loss">Збиток</div>
+      </div>
+      <div class="field-label" id="labelFieldLabel">Яку модель продав?</div>
+      <input class="text-input" id="labelInput" type="text" placeholder="Напр. iPhone 13 Pro 128GB" />
+      <div class="amount-row">
+        <span class="cur-badge" id="amountCurBadge">₴</span>
+        <input class="amount-input" id="amountInput" type="number" inputmode="decimal" placeholder="0" />
+      </div>
+      <button class="save-btn" id="saveEntry" disabled>Зберегти</button>
+    </div>
+  </div>
+
+  <!-- Rate edit sheet -->
+  <div class="sheet-backdrop" id="rateBackdrop">
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <div class="field-label">Курс: скільки грн за 1 долар</div>
+      <div class="rate-row">
+        <input id="rateInput" type="number" inputmode="decimal" />
+        <button class="refresh-btn" id="refreshRate">Оновити авто</button>
+      </div>
+      <div class="rate-hint" id="rateHint">—</div>
+      <button class="save-btn" id="saveRate">Зберегти курс</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  const SOURCES = {
+    phone:   { label:'Телефон',  icon:'📱', currency:'UAH', symbol:'₴', labelField:'Яку модель продав?', labelPlaceholder:'Напр. iPhone 13 Pro 128GB' },
+    futures: { label:"Ф'ючерс",  icon:'📈', currency:'USD', symbol:'$', labelField:'Яка угода?',        labelPlaceholder:"Напр. BTC long x10" },
+  };
+
+  const MONTHS = ['Січень','Лютий','Березень','Квітень','Травень','Червень','Липень','Серпень','Вересень','Жовтень','Листопад','Грудень'];
+  const ENTRIES_KEY = 'ledger_entries_v2';
+  const RATE_KEY = 'fx_rate_v2';
+
+  let entries = [];
+  let cursor = new Date(); cursor.setDate(1);
+  let baseCurrency = 'USD';
+  let activeFilter = 'all';
+  let rate = 41.5; // UAH per 1 USD, fallback default
+  let rateSource = 'default'; // 'default' | 'auto' | 'manual'
+  let rateUpdatedAt = null;
+
+  let currentSource = 'phone';
+  let currentSign = 'profit';
+
+  // ---------- storage (Telegram CloudStorage with localStorage fallback) ----------
+  function storageGet(key){
+    return new Promise((resolve) => {
+      if (tg && tg.CloudStorage) {
+        tg.CloudStorage.getItem(key, (err, value) => resolve(!err && value ? value : null));
+      } else {
+        try { resolve(localStorage.getItem(key)); } catch(e){ resolve(null); }
+      }
+    });
+  }
+  function storageSet(key, value){
+    if (tg && tg.CloudStorage) { tg.CloudStorage.setItem(key, value, () => {}); }
+    else { try { localStorage.setItem(key, value); } catch(e){} }
+  }
+
+  function saveEntries(){ storageSet(ENTRIES_KEY, JSON.stringify(entries)); }
+  function saveRate(){ storageSet(RATE_KEY, JSON.stringify({ rate, rateSource, rateUpdatedAt })); }
+
+  async function fetchLiveRate(){
+    try {
+      const res = await fetch('https://open.er-api.com/v6/latest/USD');
+      const data = await res.json();
+      if (data && data.rates && data.rates.UAH) return data.rates.UAH;
+    } catch(e){ /* offline or blocked — ignore, keep existing rate */ }
+    return null;
+  }
+
+  function toUSD(amount, currency){ return currency === 'USD' ? amount : amount / rate; }
+  function toUAH(amount, currency){ return currency === 'UAH' ? amount : amount * rate; }
+
+  function fmt(n, currency){
+    const abs = Math.abs(Math.round(n*100)/100);
+    const sign = n < 0 ? '-' : '';
+    return currency === 'USD' ? sign + '$' + abs.toLocaleString('en-US') : sign + abs.toLocaleString('en-US') + '₴';
+  }
+
+  function ymKey(d){ return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0'); }
+  function entriesForMonth(){ const key = ymKey(cursor); return entries.filter(e => e.date.slice(0,7) === key); }
+  function escapeHtml(s){ return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+  // ---------- Render ----------
+  function render(){
+    document.getElementById('monthLabel').textContent = MONTHS[cursor.getMonth()] + ' ' + cursor.getFullYear();
+    const monthEntries = entriesForMonth();
+
+    let totalPhonesUAH = 0, totalFuturesUSD = 0;
+    monthEntries.forEach(e => {
+      if (e.source === 'phone') totalPhonesUAH += e.amount;
+      else totalFuturesUSD += e.amount;
+    });
+
+    const combinedUSD = totalFuturesUSD + totalPhonesUAH / rate;
+    const combinedUAH = totalFuturesUSD * rate + totalPhonesUAH;
+    const net = baseCurrency === 'USD' ? combinedUSD : combinedUAH;
+
+    const netEl = document.getElementById('netAmount');
+    netEl.textContent = fmt(net, baseCurrency);
+    netEl.className = 'net-amount ' + (net >= 0 ? 'pos' : 'neg');
+
+    document.getElementById('curUSD').classList.toggle('active', baseCurrency === 'USD');
+    document.getElementById('curUAH').classList.toggle('active', baseCurrency === 'UAH');
+
+    const otherVal = baseCurrency === 'USD' ? combinedUAH : combinedUSD;
+    const otherCur = baseCurrency === 'USD' ? 'UAH' : 'USD';
+    document.getElementById('netCaption').innerHTML = `≈ <b>${fmt(otherVal, otherCur)}</b> · курс 1$ = <b>${rate.toFixed(2)}₴</b> · тапни щоб змінити`;
+
+    const phonesEl = document.getElementById('totalPhones');
+    phonesEl.textContent = fmt(totalPhonesUAH, 'UAH');
+    phonesEl.className = 'val ' + (totalPhonesUAH >= 0 ? 'pos' : 'neg');
+
+    const futEl = document.getElementById('totalFutures');
+    futEl.textContent = fmt(totalFuturesUSD, 'USD');
+    futEl.className = 'val ' + (totalFuturesUSD >= 0 ? 'pos' : 'neg');
+
+    renderLedger(monthEntries);
+    renderChart(monthEntries);
+    document.getElementById('cmpPhones').textContent = fmt(totalPhonesUAH / rate, 'USD');
+    document.getElementById('cmpFutures').textContent = fmt(totalFuturesUSD, 'USD');
+  }
+
+  function renderLedger(monthEntries){
+    const list = document.getElementById('ledgerList');
+    list.innerHTML = '';
+    const filtered = activeFilter === 'all' ? monthEntries : monthEntries.filter(e => e.source === activeFilter);
+
+    if (filtered.length === 0){
+      list.innerHTML = '<div class="empty-state"><div class="big">🧾</div><div>Ще немає записів</div><div class="sub">Натисни «Додати запис» нижче</div></div>';
+      return;
+    }
+    const byDay = {};
+    filtered.forEach(e => { (byDay[e.date] = byDay[e.date] || []).push(e); });
+    const days = Object.keys(byDay).sort().reverse();
+
+    days.forEach(day => {
+      const dayEntries = byDay[day].sort((a,b)=> b.id - a.id);
+      const group = document.createElement('div');
+      group.className = 'day-group';
+      const d = new Date(day);
+      const head = document.createElement('div');
+      head.className = 'day-head';
+      head.innerHTML = `<span>${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}</span>`;
+      group.appendChild(head);
+
+      dayEntries.forEach(e => {
+        const src = SOURCES[e.source];
+        const eqCurrency = e.source === 'phone' ? 'USD' : 'UAH';
+        const eqValue = e.source === 'phone' ? toUSD(e.amount, 'UAH') : toUAH(e.amount, 'USD');
+        const row = document.createElement('div');
+        row.className = 'entry';
+        row.innerHTML = `
+          <div class="icon">${src.icon}</div>
+          <div class="meta">
+            <div class="cat">${escapeHtml(e.label)}</div>
+            <div class="note">${src.label}</div>
+          </div>
+          <div class="amt-wrap">
+            <div class="amt ${e.amount>=0?'pos':'neg'}">${fmt(e.amount, src.currency)}</div>
+            <div class="amt-eq">≈ ${fmt(eqValue, eqCurrency)}</div>
+          </div>
+          <button class="del" data-id="${e.id}">✕</button>
+        `;
+        group.appendChild(row);
+      });
+      list.appendChild(group);
+    });
+
+    list.querySelectorAll('.del').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = Number(btn.dataset.id);
+        entries = entries.filter(e => e.id !== id);
+        saveEntries();
+        render();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+      });
+    });
+  }
+
+  function renderChart(monthEntries){
+    const canvas = document.getElementById('dailyChart');
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = canvas.parentElement.clientWidth - 32;
+    const cssHeight = 140;
+    canvas.width = cssWidth * dpr; canvas.height = cssHeight * dpr;
+    canvas.style.width = cssWidth + 'px'; canvas.style.height = cssHeight + 'px';
+    const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr); ctx.clearRect(0,0,cssWidth,cssHeight);
+
+    const daysInMonth = new Date(cursor.getFullYear(), cursor.getMonth()+1, 0).getDate();
+    const dailyNet = new Array(daysInMonth).fill(0);
+    monthEntries.forEach(e => {
+      const day = new Date(e.date).getDate();
+      dailyNet[day-1] += toUSD(e.amount, SOURCES[e.source].currency);
+    });
+
+    const maxAbs = Math.max(1, ...dailyNet.map(v => Math.abs(v)));
+    const barW = cssWidth / daysInMonth;
+    const midY = cssHeight / 2;
+    ctx.strokeStyle = 'rgba(231,236,239,0.08)';
+    ctx.beginPath(); ctx.moveTo(0, midY); ctx.lineTo(cssWidth, midY); ctx.stroke();
+
+    dailyNet.forEach((v, i) => {
+      const h = (Math.abs(v) / maxAbs) * (cssHeight/2 - 10);
+      const x = i * barW + barW*0.2; const w = barW * 0.6;
+      ctx.fillStyle = v >= 0 ? '#2DD9A8' : '#FF6B5E';
+      if (v >= 0){ ctx.fillRect(x, midY - h, w, h); } else { ctx.fillRect(x, midY, w, h); }
+    });
+  }
+
+  // ---------- Tabs / filters ----------
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      const which = tab.dataset.tab;
+      document.getElementById('view-history').classList.toggle('hidden', which !== 'history');
+      document.getElementById('view-chart').classList.toggle('hidden', which !== 'chart');
+      render();
+    });
+  });
+  document.querySelectorAll('.filter-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      activeFilter = chip.dataset.filter;
+      render();
+    });
+  });
+  document.getElementById('curUSD').addEventListener('click', () => { baseCurrency = 'USD'; render(); });
+  document.getElementById('curUAH').addEventListener('click', () => { baseCurrency = 'UAH'; render(); });
+
+  // ---------- Month nav ----------
+  document.getElementById('prevMonth').addEventListener('click', () => { cursor.setMonth(cursor.getMonth()-1); render(); });
+  document.getElementById('nextMonth').addEventListener('click', () => { cursor.setMonth(cursor.getMonth()+1); render(); });
+
+  // ---------- Add entry sheet ----------
+  const backdrop = document.getElementById('sheetBackdrop');
+  const labelInput = document.getElementById('labelInput');
+  const labelFieldLabel = document.getElementById('labelFieldLabel');
+  const amountInput = document.getElementById('amountInput');
+  const amountCurBadge = document.getElementById('amountCurBadge');
+  const saveBtn = document.getElementById('saveEntry');
+
+  function openSheet(){
+    backdrop.classList.add('open');
+    labelInput.value = ''; amountInput.value = '';
+    setSource('phone'); setSign('profit');
+    setTimeout(()=> labelInput.focus(), 200);
+  }
+  function closeSheet(){ backdrop.classList.remove('open'); }
+  document.getElementById('openAdd').addEventListener('click', openSheet);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeSheet(); });
+
+  function setSource(source){
+    currentSource = source;
+    document.querySelectorAll('#sourceToggle > div').forEach(el => el.classList.toggle('active', el.dataset.source === source));
+    const s = SOURCES[source];
+    labelFieldLabel.textContent = s.labelField;
+    labelInput.placeholder = s.labelPlaceholder;
+    amountCurBadge.textContent = s.symbol;
+    validate();
+  }
+  document.querySelectorAll('#sourceToggle > div').forEach(el => el.addEventListener('click', () => setSource(el.dataset.source)));
+
+  function setSign(sign){
+    currentSign = sign;
+    document.querySelectorAll('#signToggle > div').forEach(el => el.classList.toggle('active', el.dataset.sign === sign));
+    validate();
+  }
+  document.querySelectorAll('#signToggle > div').forEach(el => el.addEventListener('click', () => setSign(el.dataset.sign)));
+
+  function validate(){
+    const amt = parseFloat(amountInput.value);
+    saveBtn.disabled = !(amt > 0 && labelInput.value.trim().length > 0);
+  }
+  amountInput.addEventListener('input', validate);
+  labelInput.addEventListener('input', validate);
+
+  saveBtn.addEventListener('click', () => {
+    const amtRaw = parseFloat(amountInput.value);
+    if (!(amtRaw > 0 && labelInput.value.trim())) return;
+    const amt = currentSign === 'loss' ? -amtRaw : amtRaw;
+    entries.push({
+      id: Date.now(),
+      date: new Date().toISOString().slice(0,10),
+      source: currentSource,
+      label: labelInput.value.trim(),
+      amount: amt
+    });
+    saveEntries();
+    closeSheet();
+    render();
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+  });
+
+  // ---------- Rate sheet ----------
+  const rateBackdrop = document.getElementById('rateBackdrop');
+  const rateInput = document.getElementById('rateInput');
+  const rateHint = document.getElementById('rateHint');
+
+  function openRateSheet(){
+    rateInput.value = rate.toFixed(2);
+    updateRateHint();
+    rateBackdrop.classList.add('open');
+  }
+  function closeRateSheet(){ rateBackdrop.classList.remove('open'); }
+  function updateRateHint(){
+    if (rateSource === 'auto') rateHint.textContent = 'Курс отримано автоматично' + (rateUpdatedAt ? ' · ' + new Date(rateUpdatedAt).toLocaleString('uk-UA') : '');
+    else if (rateSource === 'manual') rateHint.textContent = 'Курс встановлено вручну' + (rateUpdatedAt ? ' · ' + new Date(rateUpdatedAt).toLocaleString('uk-UA') : '');
+    else rateHint.textContent = 'Курс за замовчуванням — рекомендуємо оновити';
+  }
+
+  document.getElementById('netCaption').addEventListener('click', openRateSheet);
+  rateBackdrop.addEventListener('click', (e) => { if (e.target === rateBackdrop) closeRateSheet(); });
+
+  document.getElementById('refreshRate').addEventListener('click', async () => {
+    document.getElementById('refreshRate').textContent = 'Оновлюю…';
+    const live = await fetchLiveRate();
+    document.getElementById('refreshRate').textContent = 'Оновити авто';
+    if (live){
+      rateInput.value = live.toFixed(2);
+      rate = live; rateSource = 'auto'; rateUpdatedAt = Date.now();
+      saveRate(); updateRateHint(); render();
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+    } else {
+      rateHint.textContent = 'Не вдалось отримати курс (немає інтернету?). Введи вручну.';
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('error');
+    }
+  });
+
+  document.getElementById('saveRate').addEventListener('click', () => {
+    const v = parseFloat(rateInput.value);
+    if (!(v > 0)) return;
+    rate = v; rateSource = 'manual'; rateUpdatedAt = Date.now();
+    saveRate(); closeRateSheet(); render();
+  });
+
+  // ---------- Init ----------
+  async function init(){
+    const savedEntries = await storageGet(ENTRIES_KEY);
+    if (savedEntries) { try { entries = JSON.parse(savedEntries); } catch(e){ entries = []; } }
+
+    const savedRate = await storageGet(RATE_KEY);
+    if (savedRate) {
+      try {
+        const parsed = JSON.parse(savedRate);
+        rate = parsed.rate || rate; rateSource = parsed.rateSource || 'default'; rateUpdatedAt = parsed.rateUpdatedAt || null;
+      } catch(e){}
+    }
+
+    setSource('phone'); setSign('profit');
+    render();
+
+    // Auto-refresh rate on load if it's not a recent manual override (< 6h)
+    const manualIsFresh = rateSource === 'manual' && rateUpdatedAt && (Date.now() - rateUpdatedAt) < 6*60*60*1000;
+    if (!manualIsFresh) {
+      const live = await fetchLiveRate();
+      if (live) { rate = live; rateSource = 'auto'; rateUpdatedAt = Date.now(); saveRate(); render(); }
+    }
+  }
+  init();
+
+})();
+</script>
+</body>
+</html>
