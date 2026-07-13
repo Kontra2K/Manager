@@ -120,6 +120,21 @@
     font-size:18px; padding:10px 12px; outline:none; }
   .refresh-btn{ background:var(--surface-2); border:1px solid var(--line); color:var(--text); border-radius:10px; padding:10px 14px; font-size:13px; cursor:pointer; white-space:nowrap; }
   .rate-hint{ font-size:11.5px; color:var(--muted); margin-bottom:16px; }
+
+  /* ---------- Stock (phone inventory) ---------- */
+  .stock-card{ background: var(--surface); border:1px solid var(--line); border-radius: var(--radius); padding:14px; margin-bottom:12px; }
+  .stock-card .head-row{ display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px; }
+  .stock-card .model{ font-size:15px; font-weight:600; }
+  .stock-card .del{ background:none; border:none; color:var(--muted); font-size:15px; cursor:pointer; opacity:0.5; padding:0 2px; }
+  .stock-row{ display:flex; justify-content:space-between; align-items:center; font-size:12.5px; color:var(--muted); padding:3px 0; }
+  .stock-row .v{ font-family:var(--mono); color:var(--text); font-size:13px; }
+  .stock-row.total{ border-top:1px dashed var(--line); margin-top:6px; padding-top:8px; }
+  .stock-row.total .v{ font-weight:700; color:var(--blue); }
+  .stock-actions{ display:flex; gap:8px; margin-top:12px; }
+  .stock-btn{ flex:1; text-align:center; padding:9px 0; border-radius:9px; font-size:13px; font-weight:700; cursor:pointer; border:none; }
+  .stock-btn.repair{ background:var(--surface-2); color:var(--text); }
+  .stock-btn.sell{ background:var(--mint-dim); color:var(--mint); }
+  .amount-field-label{ text-align:center; font-size:11.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:4px; }
 </style>
 </head>
 <body>
@@ -146,6 +161,7 @@
 
   <div class="tabs">
     <div class="tab active" data-tab="history">Історія</div>
+    <div class="tab" data-tab="stock">📱 Склад</div>
     <div class="tab" data-tab="chart">Графік</div>
   </div>
 
@@ -156,6 +172,10 @@
       <div class="filter-chip" data-filter="futures">📈 Ф'ючерси</div>
     </div>
     <div id="ledgerList"></div>
+  </div>
+
+  <div class="view hidden" id="view-stock">
+    <div id="stockList"></div>
   </div>
 
   <div class="view hidden" id="view-chart">
@@ -186,13 +206,27 @@
         <div class="active profit" data-sign="profit">Прибуток</div>
         <div class="loss" data-sign="loss">Збиток</div>
       </div>
-      <div class="field-label" id="labelFieldLabel">Яку модель продав?</div>
+      <div class="field-label" id="labelFieldLabel">Яку модель купив?</div>
       <input class="text-input" id="labelInput" type="text" placeholder="Напр. iPhone 13 Pro 128GB" />
+      <div class="amount-field-label" id="amountFieldLabel">Скільки купив</div>
       <div class="amount-row">
         <span class="cur-badge" id="amountCurBadge">₴</span>
         <input class="amount-input" id="amountInput" type="number" inputmode="decimal" placeholder="0" />
       </div>
       <button class="save-btn" id="saveEntry" disabled>Зберегти</button>
+    </div>
+  </div>
+
+  <!-- Stock item action sheet: add repair cost / mark as sold -->
+  <div class="sheet-backdrop" id="stockActionBackdrop">
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <div class="field-label" id="stockActionTitle">—</div>
+      <div class="amount-row">
+        <span class="cur-badge">₴</span>
+        <input class="amount-input" id="stockActionInput" type="number" inputmode="decimal" placeholder="0" />
+      </div>
+      <button class="save-btn" id="stockActionSave" disabled>Зберегти</button>
     </div>
   </div>
 
@@ -218,15 +252,17 @@
   if (tg) { tg.ready(); tg.expand(); }
 
   const SOURCES = {
-    phone:   { label:'Телефон',  icon:'📱', currency:'UAH', symbol:'₴', labelField:'Яку модель продав?', labelPlaceholder:'Напр. iPhone 13 Pro 128GB' },
-    futures: { label:"Ф'ючерс",  icon:'📈', currency:'USD', symbol:'$', labelField:'Яка угода?',        labelPlaceholder:"Напр. BTC long x10" },
+    phone:   { label:'Телефон',  icon:'📱', currency:'UAH', symbol:'₴', labelField:'Яку модель купив?', labelPlaceholder:'Напр. iPhone 13 Pro 128GB', amountLabel:'Скільки купив' },
+    futures: { label:"Ф'ючерс",  icon:'📈', currency:'USD', symbol:'$', labelField:'Яка угода?',        labelPlaceholder:"Напр. BTC long x10",        amountLabel:'Сума' },
   };
 
   const MONTHS = ['Січень','Лютий','Березень','Квітень','Травень','Червень','Липень','Серпень','Вересень','Жовтень','Листопад','Грудень'];
   const ENTRIES_KEY = 'ledger_entries_v2';
   const RATE_KEY = 'fx_rate_v2';
+  const INVENTORY_KEY = 'phone_inventory_v1';
 
   let entries = [];
+  let phoneInventory = []; // [{ id, model, purchase, repairs }] — phones bought but not yet sold
   let cursor = new Date(); cursor.setDate(1);
   let baseCurrency = 'USD';
   let activeFilter = 'all';
@@ -254,6 +290,7 @@
 
   function saveEntries(){ storageSet(ENTRIES_KEY, JSON.stringify(entries)); }
   function saveRate(){ storageSet(RATE_KEY, JSON.stringify({ rate, rateSource, rateUpdatedAt })); }
+  function saveInventory(){ storageSet(INVENTORY_KEY, JSON.stringify(phoneInventory)); }
 
   async function fetchLiveRate(){
     try {
@@ -313,8 +350,54 @@
 
     renderLedger(monthEntries);
     renderChart(monthEntries);
+    renderStock();
     document.getElementById('cmpPhones').textContent = fmt(totalPhonesUAH / rate, 'USD');
     document.getElementById('cmpFutures').textContent = fmt(totalFuturesUSD, 'USD');
+  }
+
+  function renderStock(){
+    const list = document.getElementById('stockList');
+    list.innerHTML = '';
+    if (phoneInventory.length === 0){
+      list.innerHTML = '<div class="empty-state"><div class="big">📦</div><div>Склад порожній</div><div class="sub">Додай телефон кнопкою «Додати запис» нижче</div></div>';
+      return;
+    }
+    phoneInventory.forEach(item => {
+      const total = item.purchase + item.repairs;
+      const card = document.createElement('div');
+      card.className = 'stock-card';
+      card.innerHTML = `
+        <div class="head-row">
+          <div class="model">${escapeHtml(item.model)}</div>
+          <button class="del" data-id="${item.id}">✕</button>
+        </div>
+        <div class="stock-row"><span>Купівля</span><span class="v">${fmt(item.purchase, 'UAH')}</span></div>
+        <div class="stock-row"><span>Ремонт</span><span class="v">${fmt(item.repairs, 'UAH')}</span></div>
+        <div class="stock-row total"><span>Вкладено всього</span><span class="v">${fmt(total, 'UAH')}</span></div>
+        <div class="stock-actions">
+          <button class="stock-btn repair" data-action="repair" data-id="${item.id}">+ Ремонт</button>
+          <button class="stock-btn sell" data-action="sell" data-id="${item.id}">Продати</button>
+        </div>
+      `;
+      list.appendChild(card);
+    });
+
+    list.querySelectorAll('.del').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = Number(btn.dataset.id);
+        phoneInventory = phoneInventory.filter(i => i.id !== id);
+        saveInventory();
+        renderStock();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+      });
+    });
+    list.querySelectorAll('.stock-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = Number(btn.dataset.id);
+        const action = btn.dataset.action;
+        openStockAction(id, action);
+      });
+    });
   }
 
   function renderLedger(monthEntries){
@@ -411,6 +494,7 @@
       tab.classList.add('active');
       const which = tab.dataset.tab;
       document.getElementById('view-history').classList.toggle('hidden', which !== 'history');
+      document.getElementById('view-stock').classList.toggle('hidden', which !== 'stock');
       document.getElementById('view-chart').classList.toggle('hidden', which !== 'chart');
       render();
     });
@@ -455,6 +539,8 @@
     labelFieldLabel.textContent = s.labelField;
     labelInput.placeholder = s.labelPlaceholder;
     amountCurBadge.textContent = s.symbol;
+    document.getElementById('amountFieldLabel').textContent = s.amountLabel;
+    document.getElementById('signToggle').style.display = source === 'phone' ? 'none' : 'flex';
     validate();
   }
   document.querySelectorAll('#sourceToggle > div').forEach(el => el.addEventListener('click', () => setSource(el.dataset.source)));
@@ -476,16 +562,80 @@
   saveBtn.addEventListener('click', () => {
     const amtRaw = parseFloat(amountInput.value);
     if (!(amtRaw > 0 && labelInput.value.trim())) return;
-    const amt = currentSign === 'loss' ? -amtRaw : amtRaw;
-    entries.push({
-      id: Date.now(),
-      date: new Date().toISOString().slice(0,10),
-      source: currentSource,
-      label: labelInput.value.trim(),
-      amount: amt
-    });
-    saveEntries();
+
+    if (currentSource === 'phone') {
+      // Phones go to the stock/inventory list first — profit is calculated automatically at sale time
+      phoneInventory.push({
+        id: Date.now(),
+        model: labelInput.value.trim(),
+        purchase: amtRaw,
+        repairs: 0
+      });
+      saveInventory();
+    } else {
+      const amt = currentSign === 'loss' ? -amtRaw : amtRaw;
+      entries.push({
+        id: Date.now(),
+        date: new Date().toISOString().slice(0,10),
+        source: currentSource,
+        label: labelInput.value.trim(),
+        amount: amt
+      });
+      saveEntries();
+    }
+
     closeSheet();
+    render();
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+  });
+
+  // ---------- Stock item actions: add repair cost / sell ----------
+  const stockActionBackdrop = document.getElementById('stockActionBackdrop');
+  const stockActionTitle = document.getElementById('stockActionTitle');
+  const stockActionInput = document.getElementById('stockActionInput');
+  const stockActionSave = document.getElementById('stockActionSave');
+  let stockActionContext = null; // { id, action }
+
+  function openStockAction(id, action){
+    stockActionContext = { id, action };
+    stockActionInput.value = '';
+    stockActionTitle.textContent = action === 'repair' ? 'Скільки коштував ремонт, грн' : 'За скільки продав, грн';
+    stockActionSave.disabled = true;
+    stockActionBackdrop.classList.add('open');
+    setTimeout(()=> stockActionInput.focus(), 200);
+  }
+  function closeStockAction(){ stockActionBackdrop.classList.remove('open'); stockActionContext = null; }
+  stockActionBackdrop.addEventListener('click', (e) => { if (e.target === stockActionBackdrop) closeStockAction(); });
+  stockActionInput.addEventListener('input', () => {
+    stockActionSave.disabled = !(parseFloat(stockActionInput.value) > 0);
+  });
+
+  stockActionSave.addEventListener('click', () => {
+    if (!stockActionContext) return;
+    const amt = parseFloat(stockActionInput.value);
+    if (!(amt > 0)) return;
+    const { id, action } = stockActionContext;
+    const item = phoneInventory.find(i => i.id === id);
+    if (!item) { closeStockAction(); return; }
+
+    if (action === 'repair') {
+      item.repairs += amt;
+      saveInventory();
+    } else if (action === 'sell') {
+      const profit = amt - item.purchase - item.repairs;
+      entries.push({
+        id: Date.now(),
+        date: new Date().toISOString().slice(0,10),
+        source: 'phone',
+        label: item.model,
+        amount: profit
+      });
+      phoneInventory = phoneInventory.filter(i => i.id !== id);
+      saveEntries();
+      saveInventory();
+    }
+
+    closeStockAction();
     render();
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
   });
@@ -536,6 +686,9 @@
   async function init(){
     const savedEntries = await storageGet(ENTRIES_KEY);
     if (savedEntries) { try { entries = JSON.parse(savedEntries); } catch(e){ entries = []; } }
+
+    const savedInventory = await storageGet(INVENTORY_KEY);
+    if (savedInventory) { try { phoneInventory = JSON.parse(savedInventory); } catch(e){ phoneInventory = []; } }
 
     const savedRate = await storageGet(RATE_KEY);
     if (savedRate) {
