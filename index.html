@@ -125,6 +125,10 @@
   .stock-card{ background: var(--surface); border:1px solid var(--line); border-radius: var(--radius); padding:14px; margin-bottom:12px; }
   .stock-card .head-row{ display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px; }
   .stock-card .model{ font-size:15px; font-weight:600; }
+  .stock-card .note{ font-size:11.5px; color:var(--muted); margin-top:2px; }
+  .note-row{ display:flex; align-items:center; gap:6px; margin-top:2px; }
+  .note-row .note{ margin-top:0; }
+  .note-edit{ background:none; border:none; color:var(--muted); font-size:11px; cursor:pointer; opacity:0.6; padding:0; }
   .stock-card .del{ background:none; border:none; color:var(--muted); font-size:15px; cursor:pointer; opacity:0.5; padding:0 2px; }
   .stock-row{ display:flex; justify-content:space-between; align-items:center; font-size:12.5px; color:var(--muted); padding:3px 0; }
   .stock-row .v{ font-family:var(--mono); color:var(--text); font-size:13px; }
@@ -213,6 +217,7 @@
         <span class="cur-badge" id="amountCurBadge">₴</span>
         <input class="amount-input" id="amountInput" type="number" inputmode="decimal" placeholder="0" />
       </div>
+      <input class="text-input" id="noteInput" type="text" placeholder="Коментар (необов'язково) — напр. з трещиною, з OLX" />
       <button class="save-btn" id="saveEntry" disabled>Зберегти</button>
     </div>
   </div>
@@ -227,6 +232,16 @@
         <input class="amount-input" id="stockActionInput" type="number" inputmode="decimal" placeholder="0" />
       </div>
       <button class="save-btn" id="stockActionSave" disabled>Зберегти</button>
+    </div>
+  </div>
+
+  <!-- Edit note sheet for an existing stock item -->
+  <div class="sheet-backdrop" id="noteBackdrop">
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <div class="field-label">Коментар до телефону</div>
+      <input class="text-input" id="noteEditInput" type="text" placeholder="Напр. з трещиною, з OLX" />
+      <button class="save-btn" id="noteEditSave">Зберегти</button>
     </div>
   </div>
 
@@ -368,7 +383,13 @@
       card.className = 'stock-card';
       card.innerHTML = `
         <div class="head-row">
-          <div class="model">${escapeHtml(item.model)}</div>
+          <div>
+            <div class="model">${escapeHtml(item.model)}</div>
+            <div class="note-row">
+              <div class="note">${item.note ? escapeHtml(item.note) : 'Без коментаря'}</div>
+              <button class="note-edit" data-id="${item.id}">✏️</button>
+            </div>
+          </div>
           <button class="del" data-id="${item.id}">✕</button>
         </div>
         <div class="stock-row"><span>Купівля</span><span class="v">${fmt(item.purchase, 'UAH')}</span></div>
@@ -396,6 +417,12 @@
         const id = Number(btn.dataset.id);
         const action = btn.dataset.action;
         openStockAction(id, action);
+      });
+    });
+    list.querySelectorAll('.note-edit').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = Number(btn.dataset.id);
+        openNoteEdit(id);
       });
     });
   }
@@ -520,11 +547,12 @@
   const labelFieldLabel = document.getElementById('labelFieldLabel');
   const amountInput = document.getElementById('amountInput');
   const amountCurBadge = document.getElementById('amountCurBadge');
+  const noteInput = document.getElementById('noteInput');
   const saveBtn = document.getElementById('saveEntry');
 
   function openSheet(){
     backdrop.classList.add('open');
-    labelInput.value = ''; amountInput.value = '';
+    labelInput.value = ''; amountInput.value = ''; noteInput.value = '';
     setSource('phone'); setSign('profit');
     setTimeout(()=> labelInput.focus(), 200);
   }
@@ -541,6 +569,7 @@
     amountCurBadge.textContent = s.symbol;
     document.getElementById('amountFieldLabel').textContent = s.amountLabel;
     document.getElementById('signToggle').style.display = source === 'phone' ? 'none' : 'flex';
+    noteInput.style.display = source === 'phone' ? 'block' : 'none';
     validate();
   }
   document.querySelectorAll('#sourceToggle > div').forEach(el => el.addEventListener('click', () => setSource(el.dataset.source)));
@@ -569,7 +598,8 @@
         id: Date.now(),
         model: labelInput.value.trim(),
         purchase: amtRaw,
-        repairs: 0
+        repairs: 0,
+        note: noteInput.value.trim()
       });
       saveInventory();
     } else {
@@ -637,6 +667,35 @@
 
     closeStockAction();
     render();
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+  });
+
+  // ---------- Edit note on an existing stock item ----------
+  const noteBackdrop = document.getElementById('noteBackdrop');
+  const noteEditInput = document.getElementById('noteEditInput');
+  const noteEditSave = document.getElementById('noteEditSave');
+  let noteEditId = null;
+
+  function openNoteEdit(id){
+    const item = phoneInventory.find(i => i.id === id);
+    if (!item) return;
+    noteEditId = id;
+    noteEditInput.value = item.note || '';
+    noteBackdrop.classList.add('open');
+    setTimeout(()=> noteEditInput.focus(), 200);
+  }
+  function closeNoteEdit(){ noteBackdrop.classList.remove('open'); noteEditId = null; }
+  noteBackdrop.addEventListener('click', (e) => { if (e.target === noteBackdrop) closeNoteEdit(); });
+
+  noteEditSave.addEventListener('click', () => {
+    if (noteEditId === null) return;
+    const item = phoneInventory.find(i => i.id === noteEditId);
+    if (item) {
+      item.note = noteEditInput.value.trim();
+      saveInventory();
+      renderStock();
+    }
+    closeNoteEdit();
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
   });
 
