@@ -288,19 +288,58 @@
   let currentSource = 'phone';
   let currentSign = 'profit';
 
-  // ---------- storage (Telegram CloudStorage with localStorage fallback) ----------
+  // ---------- storage (Telegram CloudStorage + localStorage mirror for safety) ----------
+  // Writes always go to both stores; on load we merge them by id so a slow/failed
+  // CloudStorage sync can never silently erase an entry that was already saved locally.
+  function localGet(key){ try { return localStorage.getItem(key); } catch(e){ return null; } }
+  function localSet(key, value){ try { localStorage.setItem(key, value); } catch(e){} }
+
   function storageGet(key){
     return new Promise((resolve) => {
       if (tg && tg.CloudStorage) {
-        tg.CloudStorage.getItem(key, (err, value) => resolve(!err && value ? value : null));
+        tg.CloudStorage.getItem(key, (err, value) => {
+          if (err) console.error('CloudStorage getItem error for', key, err);
+          resolve(!err && value ? value : localGet(key));
+        });
       } else {
-        try { resolve(localStorage.getItem(key)); } catch(e){ resolve(null); }
+        resolve(localGet(key));
       }
     });
   }
   function storageSet(key, value){
-    if (tg && tg.CloudStorage) { tg.CloudStorage.setItem(key, value, () => {}); }
-    else { try { localStorage.setItem(key, value); } catch(e){} }
+    localSet(key, value); // synchronous, same-device safety net
+    if (tg && tg.CloudStorage) {
+      tg.CloudStorage.setItem(key, value, (err) => {
+        if (err) console.error('CloudStorage setItem error for', key, err);
+      });
+    }
+  }
+
+  // For array data (entries, inventory): read both cloud and local copies and merge
+  // by id, so nothing gets lost if one of the two lagged behind or failed to save.
+  async function loadMergedArray(key){
+    const localRaw = localGet(key);
+    let localArr = [];
+    if (localRaw) { try { localArr = JSON.parse(localRaw); } catch(e){} }
+
+    let cloudArr = localArr;
+    if (tg && tg.CloudStorage) {
+      const cloudRaw = await new Promise((resolve) => {
+        tg.CloudStorage.getItem(key, (err, value) => resolve(!err && value ? value : null));
+      });
+      if (cloudRaw) { try { cloudArr = JSON.parse(cloudRaw); } catch(e){ cloudArr = localArr; } }
+    }
+
+    const map = new Map();
+    [...cloudArr, ...localArr].forEach(item => { if (item && item.id != null) map.set(item.id, item); });
+    const merged = Array.from(map.values());
+
+    // Write the reconciled result back to both stores so they converge.
+    const json = JSON.stringify(merged);
+    localSet(key, json);
+    if (tg && tg.CloudStorage) tg.CloudStorage.setItem(key, json, () => {});
+
+    return merged;
   }
 
   function saveEntries(){ storageSet(ENTRIES_KEY, JSON.stringify(entries)); }
@@ -743,11 +782,8 @@
 
   // ---------- Init ----------
   async function init(){
-    const savedEntries = await storageGet(ENTRIES_KEY);
-    if (savedEntries) { try { entries = JSON.parse(savedEntries); } catch(e){ entries = []; } }
-
-    const savedInventory = await storageGet(INVENTORY_KEY);
-    if (savedInventory) { try { phoneInventory = JSON.parse(savedInventory); } catch(e){ phoneInventory = []; } }
+    entries = await loadMergedArray(ENTRIES_KEY);
+    phoneInventory = await loadMergedArray(INVENTORY_KEY);
 
     const savedRate = await storageGet(RATE_KEY);
     if (savedRate) {
