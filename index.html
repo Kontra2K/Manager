@@ -330,7 +330,8 @@
 
   // For array data (entries, inventory): merge remote + local by id, so nothing is lost
   // even if the remote save from another device hasn't finished, or this device was offline.
-  async function loadMergedArray(key){
+  // deletedSet excludes anything explicitly deleted, so it can't be resurrected by the merge.
+  async function loadMergedArray(key, deletedSet){
     const localArr = localGet(key) || [];
     let remoteArr = localArr;
     const remote = await remoteGet(key);
@@ -338,7 +339,8 @@
 
     const map = new Map();
     [...remoteArr, ...localArr].forEach(item => { if (item && item.id != null) map.set(item.id, item); });
-    const merged = Array.from(map.values());
+    let merged = Array.from(map.values());
+    if (deletedSet) merged = merged.filter(item => !deletedSet.has(item.id));
 
     localSet(key, merged);
     remoteSet(key, merged);
@@ -358,6 +360,31 @@
   function saveEntries(){ saveObject(ENTRIES_KEY, entries); }
   function saveRate(){ saveObject(RATE_KEY, { rate, rateSource, rateUpdatedAt }); }
   function saveInventory(){ saveObject(INVENTORY_KEY, phoneInventory); }
+
+  // ---------- Deletion tombstones ----------
+  // The merge-by-id logic above is designed to never lose an entry that exists on
+  // either device — which is great for preventing data loss, but it means a plain
+  // delete can get "resurrected" if the deletion hadn't synced yet on another device.
+  // To fix that, we track deleted ids separately; tombstone sets only ever grow, so
+  // merging them (a simple union) is always safe and never re-adds removed items.
+  const ENTRIES_DELETED_KEY = ENTRIES_KEY + '_deleted';
+  const INVENTORY_DELETED_KEY = INVENTORY_KEY + '_deleted';
+  let deletedEntryIds = new Set();
+  let deletedInventoryIds = new Set();
+
+  async function loadDeletedIds(key){
+    const localArr = localGet(key) || [];
+    let remoteArr = localArr;
+    const remote = await remoteGet(key);
+    if (Array.isArray(remote)) remoteArr = remote;
+    const merged = Array.from(new Set([...remoteArr, ...localArr]));
+    saveObject(key, merged);
+    return new Set(merged);
+  }
+  function markDeleted(deletedKey, idsSet, id){
+    idsSet.add(id);
+    saveObject(deletedKey, Array.from(idsSet));
+  }
 
 
   async function fetchLiveRate(){
@@ -460,6 +487,7 @@
       btn.addEventListener('click', () => {
         const id = Number(btn.dataset.id);
         phoneInventory = phoneInventory.filter(i => i.id !== id);
+        markDeleted(INVENTORY_DELETED_KEY, deletedInventoryIds, id);
         saveInventory();
         renderStock();
         if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
@@ -530,6 +558,7 @@
       btn.addEventListener('click', () => {
         const id = Number(btn.dataset.id);
         entries = entries.filter(e => e.id !== id);
+        markDeleted(ENTRIES_DELETED_KEY, deletedEntryIds, id);
         saveEntries();
         render();
         if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
@@ -714,6 +743,7 @@
         amount: profit
       });
       phoneInventory = phoneInventory.filter(i => i.id !== id);
+      markDeleted(INVENTORY_DELETED_KEY, deletedInventoryIds, id);
       saveEntries();
       saveInventory();
     }
@@ -799,8 +829,10 @@
     const syncStatusEl = document.getElementById('syncStatus');
     syncStatusEl.textContent = '⏳ Перевірка синхронізації…';
 
-    entries = await loadMergedArray(ENTRIES_KEY);
-    phoneInventory = await loadMergedArray(INVENTORY_KEY);
+    deletedEntryIds = await loadDeletedIds(ENTRIES_DELETED_KEY);
+    deletedInventoryIds = await loadDeletedIds(INVENTORY_DELETED_KEY);
+    entries = await loadMergedArray(ENTRIES_KEY, deletedEntryIds);
+    phoneInventory = await loadMergedArray(INVENTORY_KEY, deletedInventoryIds);
 
     const savedRate = await loadObject(RATE_KEY, null);
     if (savedRate) {
