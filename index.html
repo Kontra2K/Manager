@@ -289,63 +289,76 @@
   let currentSource = 'phone';
   let currentSign = 'profit';
 
-  // ---------- storage (Telegram CloudStorage + localStorage mirror for safety) ----------
-  // Writes always go to both stores; on load we merge them by id so a slow/failed
-  // CloudStorage sync can never silently erase an entry that was already saved locally.
-  function localGet(key){ try { return localStorage.getItem(key); } catch(e){ return null; } }
-  function localSet(key, value){ try { localStorage.setItem(key, value); } catch(e){} }
+  const SYNC_API = 'https://kontra2k--4f3cf8848f8311f1be091607ee4eb77e.web.val.run';
 
-  function storageGet(key){
-    return new Promise((resolve) => {
-      if (tg && tg.CloudStorage) {
-        tg.CloudStorage.getItem(key, (err, value) => {
-          if (err) console.error('CloudStorage getItem error for', key, err);
-          resolve(!err && value ? value : localGet(key));
-        });
-      } else {
-        resolve(localGet(key));
+  function getUserId(){
+    try {
+      if (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) {
+        return String(tg.initDataUnsafe.user.id);
       }
-    });
+    } catch(e){}
+    // Fallback for testing outside Telegram: a stable per-browser id
+    try {
+      let anon = localStorage.getItem('anon_uid');
+      if (!anon) { anon = 'anon_' + Date.now(); localStorage.setItem('anon_uid', anon); }
+      return anon;
+    } catch(e){ return 'anon_shared'; }
   }
-  function storageSet(key, value){
-    localSet(key, value); // synchronous, same-device safety net
-    if (tg && tg.CloudStorage) {
-      tg.CloudStorage.setItem(key, value, (err) => {
-        if (err) console.error('CloudStorage setItem error for', key, err);
+  const USER_ID = getUserId();
+
+  // ---------- storage: Val Town Blob Storage (real, centralized, syncs across all devices) ----------
+  // localStorage is kept only as an instant same-device cache / offline fallback.
+  function localGet(key){ try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : null; } catch(e){ return null; } }
+  function localSet(key, value){ try { localStorage.setItem(key, JSON.stringify(value)); } catch(e){} }
+
+  async function remoteGet(key){
+    try {
+      const res = await fetch(`${SYNC_API}/?userId=${encodeURIComponent(USER_ID)}&key=${encodeURIComponent(key)}`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch(e){ console.error('remoteGet failed for', key, e); return null; }
+  }
+  async function remoteSet(key, value){
+    try {
+      await fetch(`${SYNC_API}/?userId=${encodeURIComponent(USER_ID)}&key=${encodeURIComponent(key)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(value)
       });
-    }
+    } catch(e){ console.error('remoteSet failed for', key, e); }
   }
 
-  // For array data (entries, inventory): read both cloud and local copies and merge
-  // by id, so nothing gets lost if one of the two lagged behind or failed to save.
+  // For array data (entries, inventory): merge remote + local by id, so nothing is lost
+  // even if the remote save from another device hasn't finished, or this device was offline.
   async function loadMergedArray(key){
-    const localRaw = localGet(key);
-    let localArr = [];
-    if (localRaw) { try { localArr = JSON.parse(localRaw); } catch(e){} }
-
-    let cloudArr = localArr;
-    if (tg && tg.CloudStorage) {
-      const cloudRaw = await new Promise((resolve) => {
-        tg.CloudStorage.getItem(key, (err, value) => resolve(!err && value ? value : null));
-      });
-      if (cloudRaw) { try { cloudArr = JSON.parse(cloudRaw); } catch(e){ cloudArr = localArr; } }
-    }
+    const localArr = localGet(key) || [];
+    let remoteArr = localArr;
+    const remote = await remoteGet(key);
+    if (Array.isArray(remote)) remoteArr = remote;
 
     const map = new Map();
-    [...cloudArr, ...localArr].forEach(item => { if (item && item.id != null) map.set(item.id, item); });
+    [...remoteArr, ...localArr].forEach(item => { if (item && item.id != null) map.set(item.id, item); });
     const merged = Array.from(map.values());
 
-    // Write the reconciled result back to both stores so they converge.
-    const json = JSON.stringify(merged);
-    localSet(key, json);
-    if (tg && tg.CloudStorage) tg.CloudStorage.setItem(key, json, () => {});
-
+    localSet(key, merged);
+    remoteSet(key, merged);
     return merged;
   }
 
-  function saveEntries(){ storageSet(ENTRIES_KEY, JSON.stringify(entries)); }
-  function saveRate(){ storageSet(RATE_KEY, JSON.stringify({ rate, rateSource, rateUpdatedAt })); }
-  function saveInventory(){ storageSet(INVENTORY_KEY, JSON.stringify(phoneInventory)); }
+  async function loadObject(key, fallback){
+    const local = localGet(key);
+    const remote = await remoteGet(key);
+    return remote || local || fallback;
+  }
+  function saveObject(key, value){
+    localSet(key, value);
+    remoteSet(key, value);
+  }
+
+  function saveEntries(){ saveObject(ENTRIES_KEY, entries); }
+  function saveRate(){ saveObject(RATE_KEY, { rate, rateSource, rateUpdatedAt }); }
+  function saveInventory(){ saveObject(INVENTORY_KEY, phoneInventory); }
+
 
   async function fetchLiveRate(){
     try {
@@ -784,22 +797,21 @@
   // ---------- Init ----------
   async function init(){
     const syncStatusEl = document.getElementById('syncStatus');
-    if (tg && tg.CloudStorage) {
-      syncStatusEl.textContent = '☁️ Синхронізація: CloudStorage (між пристроями)';
-    } else {
-      syncStatusEl.textContent = '📵 Без синхронізації — дані лише в цьому браузері/пристрої';
-    }
+    syncStatusEl.textContent = '⏳ Перевірка синхронізації…';
 
     entries = await loadMergedArray(ENTRIES_KEY);
     phoneInventory = await loadMergedArray(INVENTORY_KEY);
 
-    const savedRate = await storageGet(RATE_KEY);
+    const savedRate = await loadObject(RATE_KEY, null);
     if (savedRate) {
-      try {
-        const parsed = JSON.parse(savedRate);
-        rate = parsed.rate || rate; rateSource = parsed.rateSource || 'default'; rateUpdatedAt = parsed.rateUpdatedAt || null;
-      } catch(e){}
+      rate = savedRate.rate || rate; rateSource = savedRate.rateSource || 'default'; rateUpdatedAt = savedRate.rateUpdatedAt || null;
     }
+
+    // A quick reachability check against the sync API to reflect real status, not just presence of an SDK.
+    const pingOk = await remoteGet(ENTRIES_KEY).then(r => r !== null).catch(() => false);
+    syncStatusEl.textContent = pingOk
+      ? '☁️ Синхронізація активна (між усіма пристроями)'
+      : '⚠️ Немає з’єднання з сервером синхронізації — дані лише локально';
 
     setSource('phone'); setSign('profit');
     render();
