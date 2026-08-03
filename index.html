@@ -196,6 +196,7 @@
     </div>
   </div>
 
+  <div id="syncStatus" style="position:fixed; left:0; right:0; bottom:78px; text-align:center; font-size:10.5px; color:var(--muted); pointer-events:none;">—</div>
   <button class="fab" id="openAdd">+ Додати запис</button>
 
   <!-- Add entry sheet -->
@@ -782,6 +783,13 @@
 
   // ---------- Init ----------
   async function init(){
+    const syncStatusEl = document.getElementById('syncStatus');
+    if (tg && tg.CloudStorage) {
+      syncStatusEl.textContent = '☁️ Синхронізація: CloudStorage (між пристроями)';
+    } else {
+      syncStatusEl.textContent = '📵 Без синхронізації — дані лише в цьому браузері/пристрої';
+    }
+
     entries = await loadMergedArray(ENTRIES_KEY);
     phoneInventory = await loadMergedArray(INVENTORY_KEY);
 
