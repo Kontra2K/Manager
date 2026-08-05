@@ -139,6 +139,18 @@
   .stock-btn.repair{ background:var(--surface-2); color:var(--text); }
   .stock-btn.sell{ background:var(--mint-dim); color:var(--mint); }
   .amount-field-label{ text-align:center; font-size:11.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:4px; }
+
+  /* ---------- Expense categories ---------- */
+  .exp-cat-grid{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+  .exp-cat-chip{ background:var(--surface-2); border:1px solid transparent; border-radius:10px; padding:8px 12px;
+    font-size:13px; color:var(--text); cursor:pointer; display:flex; align-items:center; gap:6px; }
+  .exp-cat-chip.selected{ border-color: var(--coral); }
+  .catbar-row{ display:flex; align-items:center; gap:10px; padding:7px 0; cursor:pointer; }
+  .catbar-row .cname{ width:100px; font-size:12.5px; color:var(--muted); flex-shrink:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .catbar-row .bar-track{ flex:1; height:8px; background:var(--surface-2); border-radius:4px; overflow:hidden; }
+  .catbar-row .bar-fill{ height:100%; border-radius:4px; background:var(--coral); }
+  .catbar-row .cval{ font-family:var(--mono); font-size:12.5px; width:70px; text-align:right; flex-shrink:0; }
+  .catbar-row.active .cname{ color:var(--text); font-weight:600; }
 </style>
 </head>
 <body>
@@ -191,6 +203,10 @@
     <div style="display:flex; gap:8px; margin-bottom:14px;">
       <button class="stock-btn repair" id="addCashExpense" style="flex:1;">💵 Готівкою</button>
       <button class="stock-btn" id="syncMonoBtn" style="flex:1; background:var(--mint-dim); color:var(--mint);">🔄 Синхронізувати</button>
+    </div>
+    <div class="chart-card" id="expenseCategoryCard" style="display:none;">
+      <div class="chart-title">За категоріями <span id="expenseCategoryClear" style="float:right; color:var(--mint); cursor:pointer; text-transform:none; letter-spacing:0; display:none;">✕ скинути фільтр</span></div>
+      <div id="expenseCategoryBreakdown"></div>
     </div>
     <div id="expensesList"></div>
   </div>
@@ -263,6 +279,8 @@
   <div class="sheet-backdrop" id="cashExpenseBackdrop">
     <div class="sheet">
       <div class="sheet-handle"></div>
+      <div class="field-label">Категорія</div>
+      <div class="exp-cat-grid" id="cashCategoryGrid"></div>
       <div class="field-label">Коментар / на що витратив</div>
       <input class="text-input" id="cashExpenseLabel" type="text" placeholder="Напр. таксі, продукти" />
       <div class="amount-field-label">Сума, грн</div>
@@ -299,6 +317,32 @@
     phone:   { label:'Телефон',  icon:'📱', currency:'UAH', symbol:'₴', labelField:'Яку модель купив?', labelPlaceholder:'Напр. iPhone 13 Pro 128GB', amountLabel:'Скільки купив' },
     futures: { label:"Ф'ючерс",  icon:'📈', currency:'USD', symbol:'$', labelField:'Яка угода?',        labelPlaceholder:"Напр. BTC long x10",        amountLabel:'Сума' },
   };
+
+  const EXPENSE_CATEGORIES = {
+    food:      { label:'Їжа',            icon:'🍔' },
+    transport: { label:'Транспорт',      icon:'🚕' },
+    home:      { label:'Дім/комуналка',  icon:'🏠' },
+    health:    { label:"Здоров'я",       icon:'💊' },
+    fun:       { label:'Розваги',        icon:'🎮' },
+    shopping:  { label:'Покупки',        icon:'🛍️' },
+    other:     { label:'Інше',           icon:'📦' },
+  };
+
+  // Rough MCC (merchant category code) -> our category mapping, for auto-categorizing Monobank transactions.
+  function mccToCategory(mcc){
+    const groups = {
+      food:      [5411,5412,5422,5441,5451,5462,5499,5811,5812,5813,5814],
+      transport: [4111,4121,4131,4789,5541,5542,5533,7523,4511],
+      home:      [4900,4814,4816,4899,1520,1711,1731,5200,5211,5231,5251,5712,5719],
+      health:    [5912,8011,8021,8031,8043,8049,8062,8071,8099],
+      fun:       [5813,5815,5816,5817,5818,7832,7841,7922,7929,7932,7933,7991,7994,7995,7996,7998,7999],
+      shopping:  [5310,5311,5399,5611,5621,5631,5641,5651,5661,5691,5699,5732,5733,5734,5735,5940,5944,5945,5977],
+    };
+    for (const [cat, codes] of Object.entries(groups)) {
+      if (codes.includes(mcc)) return cat;
+    }
+    return 'other';
+  }
 
   const MONTHS = ['Січень','Лютий','Березень','Квітень','Травень','Червень','Липень','Серпень','Вересень','Жовтень','Листопад','Грудень'];
   const ENTRIES_KEY = 'ledger_entries_v2';
@@ -549,20 +593,30 @@
     return expenses.filter(e => e.date.slice(0,7) === key);
   }
 
+  let activeExpenseCategory = null;
+
   function renderExpenses(){
     const monthExpenses = expensesForMonth();
     const total = monthExpenses.reduce((s, e) => s + e.amount, 0);
     document.getElementById('expensesMonthTotal').textContent = '-' + fmt(total, 'UAH');
 
+    renderExpenseCategoryBreakdown(monthExpenses);
+
+    const filtered = activeExpenseCategory
+      ? monthExpenses.filter(e => (e.category || 'other') === activeExpenseCategory)
+      : monthExpenses;
+
     const list = document.getElementById('expensesList');
     list.innerHTML = '';
-    if (monthExpenses.length === 0){
-      list.innerHTML = '<div class="empty-state"><div class="big">💸</div><div>Витрат за цей місяць ще немає</div></div>';
+    if (filtered.length === 0){
+      list.innerHTML = '<div class="empty-state"><div class="big">💸</div><div>' +
+        (activeExpenseCategory ? 'Немає витрат у цій категорії' : 'Витрат за цей місяць ще немає') +
+        '</div></div>';
       return;
     }
 
     const byDay = {};
-    monthExpenses.forEach(e => { (byDay[e.date] = byDay[e.date] || []).push(e); });
+    filtered.forEach(e => { (byDay[e.date] = byDay[e.date] || []).push(e); });
     const days = Object.keys(byDay).sort().reverse();
 
     days.forEach(day => {
@@ -577,13 +631,14 @@
       group.appendChild(head);
 
       dayExpenses.forEach(e => {
+        const cat = EXPENSE_CATEGORIES[e.category || 'other'] || EXPENSE_CATEGORIES.other;
         const row = document.createElement('div');
         row.className = 'entry';
         row.innerHTML = `
-          <div class="icon">${e.source === 'mono' ? '🏦' : '💵'}</div>
+          <div class="icon">${cat.icon}</div>
           <div class="meta">
             <div class="cat">${escapeHtml(e.label)}</div>
-            <div class="note">${e.source === 'mono' ? 'Monobank' : 'Готівка'}</div>
+            <div class="note">${cat.label} · ${e.source === 'mono' ? 'Monobank' : 'Готівка'}</div>
           </div>
           <div class="leader"></div>
           <div class="amt neg">-${fmt(e.amount, 'UAH')}</div>
@@ -606,6 +661,46 @@
       });
     });
   }
+
+  function renderExpenseCategoryBreakdown(monthExpenses){
+    const card = document.getElementById('expenseCategoryCard');
+    const wrap = document.getElementById('expenseCategoryBreakdown');
+    const clearBtn = document.getElementById('expenseCategoryClear');
+
+    if (monthExpenses.length === 0){ card.style.display = 'none'; return; }
+    card.style.display = 'block';
+    clearBtn.style.display = activeExpenseCategory ? 'inline' : 'none';
+
+    const byCat = {};
+    monthExpenses.forEach(e => {
+      const k = e.category || 'other';
+      byCat[k] = (byCat[k] || 0) + e.amount;
+    });
+    const max = Math.max(...Object.values(byCat));
+    const sorted = Object.entries(byCat).sort((a,b) => b[1] - a[1]);
+
+    wrap.innerHTML = '';
+    sorted.forEach(([key, val]) => {
+      const cat = EXPENSE_CATEGORIES[key] || EXPENSE_CATEGORIES.other;
+      const row = document.createElement('div');
+      row.className = 'catbar-row' + (activeExpenseCategory === key ? ' active' : '');
+      row.dataset.cat = key;
+      row.innerHTML = `
+        <div class="cname">${cat.icon} ${cat.label}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${(val/max*100)}%;"></div></div>
+        <div class="cval">-${fmt(val, 'UAH')}</div>
+      `;
+      row.addEventListener('click', () => {
+        activeExpenseCategory = (activeExpenseCategory === key) ? null : key;
+        renderExpenses();
+      });
+      wrap.appendChild(row);
+    });
+  }
+  document.getElementById('expenseCategoryClear').addEventListener('click', () => {
+    activeExpenseCategory = null;
+    renderExpenses();
+  });
 
   function renderLedger(monthEntries){
     const list = document.getElementById('ledgerList');
@@ -887,9 +982,29 @@
   const cashExpenseLabel = document.getElementById('cashExpenseLabel');
   const cashExpenseAmount = document.getElementById('cashExpenseAmount');
   const saveCashExpenseBtn = document.getElementById('saveCashExpense');
+  const cashCategoryGrid = document.getElementById('cashCategoryGrid');
+  let currentCashCategory = null;
+
+  function renderCashCategoryGrid(){
+    cashCategoryGrid.innerHTML = '';
+    Object.entries(EXPENSE_CATEGORIES).forEach(([key, cat]) => {
+      const chip = document.createElement('div');
+      chip.className = 'exp-cat-chip';
+      chip.innerHTML = `<span>${cat.icon}</span><span>${cat.label}</span>`;
+      chip.addEventListener('click', () => {
+        currentCashCategory = key;
+        cashCategoryGrid.querySelectorAll('.exp-cat-chip').forEach(el => el.classList.remove('selected'));
+        chip.classList.add('selected');
+        validateCashExpense();
+      });
+      cashCategoryGrid.appendChild(chip);
+    });
+  }
 
   function openCashExpenseSheet(){
     cashExpenseLabel.value = ''; cashExpenseAmount.value = '';
+    currentCashCategory = null;
+    renderCashCategoryGrid();
     saveCashExpenseBtn.disabled = true;
     cashExpenseBackdrop.classList.add('open');
     setTimeout(()=> cashExpenseLabel.focus(), 200);
@@ -900,21 +1015,22 @@
 
   function validateCashExpense(){
     const amt = parseFloat(cashExpenseAmount.value);
-    saveCashExpenseBtn.disabled = !(amt > 0 && cashExpenseLabel.value.trim());
+    saveCashExpenseBtn.disabled = !(amt > 0 && cashExpenseLabel.value.trim() && currentCashCategory);
   }
   cashExpenseLabel.addEventListener('input', validateCashExpense);
   cashExpenseAmount.addEventListener('input', validateCashExpense);
 
   saveCashExpenseBtn.addEventListener('click', () => {
     const amt = parseFloat(cashExpenseAmount.value);
-    if (!(amt > 0 && cashExpenseLabel.value.trim())) return;
+    if (!(amt > 0 && cashExpenseLabel.value.trim() && currentCashCategory)) return;
     expenses.push({
       id: Date.now(),
       date: new Date().toISOString().slice(0,10),
       time: Math.floor(Date.now()/1000),
       source: 'cash',
       amount: amt,
-      label: cashExpenseLabel.value.trim()
+      label: cashExpenseLabel.value.trim(),
+      category: currentCashCategory
     });
     saveExpenses();
     closeCashExpenseSheet();
@@ -962,7 +1078,8 @@
           time: item.time,
           source: 'mono',
           amount: item.amount,
-          label: item.description
+          label: item.description,
+          category: mccToCategory(item.mcc)
         });
         addedCount++;
       });
