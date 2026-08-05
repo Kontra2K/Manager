@@ -166,6 +166,7 @@
   <div class="tabs">
     <div class="tab active" data-tab="history">Історія</div>
     <div class="tab" data-tab="stock">📱 Склад</div>
+    <div class="tab" data-tab="expenses">💸 Витрати</div>
     <div class="tab" data-tab="chart">Графік</div>
   </div>
 
@@ -180,6 +181,18 @@
 
   <div class="view hidden" id="view-stock">
     <div id="stockList"></div>
+  </div>
+
+  <div class="view hidden" id="view-expenses">
+    <div class="stock-card" style="margin-bottom:14px;">
+      <div class="stock-row"><span>Витрати за місяць</span><span class="v" id="expensesMonthTotal" style="color:var(--coral); font-weight:700;">0₴</span></div>
+      <div class="stock-row" style="margin-top:4px;"><span id="monoSyncStatus">Синхронізація ще не запускалась</span></div>
+    </div>
+    <div style="display:flex; gap:8px; margin-bottom:14px;">
+      <button class="stock-btn repair" id="addCashExpense" style="flex:1;">💵 Готівкою</button>
+      <button class="stock-btn" id="syncMonoBtn" style="flex:1; background:var(--mint-dim); color:var(--mint);">🔄 Синхронізувати</button>
+    </div>
+    <div id="expensesList"></div>
   </div>
 
   <div class="view hidden" id="view-chart">
@@ -246,6 +259,21 @@
     </div>
   </div>
 
+  <!-- Cash expense sheet -->
+  <div class="sheet-backdrop" id="cashExpenseBackdrop">
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <div class="field-label">Коментар / на що витратив</div>
+      <input class="text-input" id="cashExpenseLabel" type="text" placeholder="Напр. таксі, продукти" />
+      <div class="amount-field-label">Сума, грн</div>
+      <div class="amount-row">
+        <span class="cur-badge">₴</span>
+        <input class="amount-input" id="cashExpenseAmount" type="number" inputmode="decimal" placeholder="0" />
+      </div>
+      <button class="save-btn" id="saveCashExpense" disabled>Зберегти</button>
+    </div>
+  </div>
+
   <!-- Rate edit sheet -->
   <div class="sheet-backdrop" id="rateBackdrop">
     <div class="sheet">
@@ -276,9 +304,12 @@
   const ENTRIES_KEY = 'ledger_entries_v2';
   const RATE_KEY = 'fx_rate_v2';
   const INVENTORY_KEY = 'phone_inventory_v1';
+  const EXPENSES_KEY = 'expenses_v1';
+  const MONO_LAST_SYNC_KEY = 'mono_last_sync_v1';
 
   let entries = [];
   let phoneInventory = []; // [{ id, model, purchase, repairs }] — phones bought but not yet sold
+  let expenses = []; // [{ id, date, source: 'cash'|'mono', amount (UAH), label }]
   let cursor = new Date(); cursor.setDate(1);
   let baseCurrency = 'USD';
   let activeFilter = 'all';
@@ -290,6 +321,7 @@
   let currentSign = 'profit';
 
   const SYNC_API = 'https://kontra2k--4f3cf8848f8311f1be091607ee4eb77e.web.val.run';
+  const MONOBANK_PROXY = 'https://kontra2k--b1e9ec188f8711f187ee1607ee4eb77e.web.val.run';
 
   function getUserId(){
     try {
@@ -360,6 +392,7 @@
   function saveEntries(){ saveObject(ENTRIES_KEY, entries); }
   function saveRate(){ saveObject(RATE_KEY, { rate, rateSource, rateUpdatedAt }); }
   function saveInventory(){ saveObject(INVENTORY_KEY, phoneInventory); }
+  function saveExpenses(){ saveObject(EXPENSES_KEY, expenses); }
 
   // ---------- Deletion tombstones ----------
   // The merge-by-id logic above is designed to never lose an entry that exists on
@@ -369,8 +402,10 @@
   // merging them (a simple union) is always safe and never re-adds removed items.
   const ENTRIES_DELETED_KEY = ENTRIES_KEY + '_deleted';
   const INVENTORY_DELETED_KEY = INVENTORY_KEY + '_deleted';
+  const EXPENSES_DELETED_KEY = EXPENSES_KEY + '_deleted';
   let deletedEntryIds = new Set();
   let deletedInventoryIds = new Set();
+  let deletedExpenseIds = new Set();
 
   async function loadDeletedIds(key){
     const localArr = localGet(key) || [];
@@ -446,6 +481,7 @@
     renderLedger(monthEntries);
     renderChart(monthEntries);
     renderStock();
+    renderExpenses();
     document.getElementById('cmpPhones').textContent = fmt(totalPhonesUAH / rate, 'USD');
     document.getElementById('cmpFutures').textContent = fmt(totalFuturesUSD, 'USD');
   }
@@ -504,6 +540,69 @@
       btn.addEventListener('click', () => {
         const id = Number(btn.dataset.id);
         openNoteEdit(id);
+      });
+    });
+  }
+
+  function expensesForMonth(){
+    const key = ymKey(cursor);
+    return expenses.filter(e => e.date.slice(0,7) === key);
+  }
+
+  function renderExpenses(){
+    const monthExpenses = expensesForMonth();
+    const total = monthExpenses.reduce((s, e) => s + e.amount, 0);
+    document.getElementById('expensesMonthTotal').textContent = '-' + fmt(total, 'UAH');
+
+    const list = document.getElementById('expensesList');
+    list.innerHTML = '';
+    if (monthExpenses.length === 0){
+      list.innerHTML = '<div class="empty-state"><div class="big">💸</div><div>Витрат за цей місяць ще немає</div></div>';
+      return;
+    }
+
+    const byDay = {};
+    monthExpenses.forEach(e => { (byDay[e.date] = byDay[e.date] || []).push(e); });
+    const days = Object.keys(byDay).sort().reverse();
+
+    days.forEach(day => {
+      const dayExpenses = byDay[day].sort((a,b) => (b.time || 0) - (a.time || 0));
+      const dayTotal = dayExpenses.reduce((s, e) => s + e.amount, 0);
+      const group = document.createElement('div');
+      group.className = 'day-group';
+      const d = new Date(day);
+      const head = document.createElement('div');
+      head.className = 'day-head';
+      head.innerHTML = `<span>${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}</span><span class="day-net">-${fmt(dayTotal, 'UAH')}</span>`;
+      group.appendChild(head);
+
+      dayExpenses.forEach(e => {
+        const row = document.createElement('div');
+        row.className = 'entry';
+        row.innerHTML = `
+          <div class="icon">${e.source === 'mono' ? '🏦' : '💵'}</div>
+          <div class="meta">
+            <div class="cat">${escapeHtml(e.label)}</div>
+            <div class="note">${e.source === 'mono' ? 'Monobank' : 'Готівка'}</div>
+          </div>
+          <div class="leader"></div>
+          <div class="amt neg">-${fmt(e.amount, 'UAH')}</div>
+          <button class="del" data-id="${e.id}">✕</button>
+        `;
+        group.appendChild(row);
+      });
+      list.appendChild(group);
+    });
+
+    list.querySelectorAll('.del').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.id;
+        const numericOrStringId = /^\d+$/.test(id) ? Number(id) : id;
+        expenses = expenses.filter(e => e.id !== numericOrStringId);
+        markDeleted(EXPENSES_DELETED_KEY, deletedExpenseIds, numericOrStringId);
+        saveExpenses();
+        renderExpenses();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
       });
     });
   }
@@ -604,6 +703,7 @@
       const which = tab.dataset.tab;
       document.getElementById('view-history').classList.toggle('hidden', which !== 'history');
       document.getElementById('view-stock').classList.toggle('hidden', which !== 'stock');
+      document.getElementById('view-expenses').classList.toggle('hidden', which !== 'expenses');
       document.getElementById('view-chart').classList.toggle('hidden', which !== 'chart');
       render();
     });
@@ -782,6 +882,106 @@
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
   });
 
+  // ---------- Cash expense sheet ----------
+  const cashExpenseBackdrop = document.getElementById('cashExpenseBackdrop');
+  const cashExpenseLabel = document.getElementById('cashExpenseLabel');
+  const cashExpenseAmount = document.getElementById('cashExpenseAmount');
+  const saveCashExpenseBtn = document.getElementById('saveCashExpense');
+
+  function openCashExpenseSheet(){
+    cashExpenseLabel.value = ''; cashExpenseAmount.value = '';
+    saveCashExpenseBtn.disabled = true;
+    cashExpenseBackdrop.classList.add('open');
+    setTimeout(()=> cashExpenseLabel.focus(), 200);
+  }
+  function closeCashExpenseSheet(){ cashExpenseBackdrop.classList.remove('open'); }
+  document.getElementById('addCashExpense').addEventListener('click', openCashExpenseSheet);
+  cashExpenseBackdrop.addEventListener('click', (e) => { if (e.target === cashExpenseBackdrop) closeCashExpenseSheet(); });
+
+  function validateCashExpense(){
+    const amt = parseFloat(cashExpenseAmount.value);
+    saveCashExpenseBtn.disabled = !(amt > 0 && cashExpenseLabel.value.trim());
+  }
+  cashExpenseLabel.addEventListener('input', validateCashExpense);
+  cashExpenseAmount.addEventListener('input', validateCashExpense);
+
+  saveCashExpenseBtn.addEventListener('click', () => {
+    const amt = parseFloat(cashExpenseAmount.value);
+    if (!(amt > 0 && cashExpenseLabel.value.trim())) return;
+    expenses.push({
+      id: Date.now(),
+      date: new Date().toISOString().slice(0,10),
+      time: Math.floor(Date.now()/1000),
+      source: 'cash',
+      amount: amt,
+      label: cashExpenseLabel.value.trim()
+    });
+    saveExpenses();
+    closeCashExpenseSheet();
+    render();
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+  });
+
+  // ---------- Monobank sync ----------
+  const MONO_SYNC_COOLDOWN_MS = 65 * 1000; // stay comfortably above Monobank's 60s statement rate limit
+
+  function updateMonoSyncStatusText(text){
+    const el = document.getElementById('monoSyncStatus');
+    if (el) el.textContent = text;
+  }
+
+  async function syncMonobank(showLoadingText){
+    if (showLoadingText) updateMonoSyncStatusText('🔄 Синхронізація...');
+
+    const lastSync = await loadObject(MONO_LAST_SYNC_KEY, null);
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    if (lastSync && lastSync.at && (Date.now() - lastSync.at) < MONO_SYNC_COOLDOWN_MS) {
+      updateMonoSyncStatusText('✅ Синхронізовано щойно · зачекай хвилину перед наступним оновленням');
+      return;
+    }
+
+    const from = lastSync && lastSync.to ? lastSync.to : (nowSec - 31*24*60*60);
+
+    try {
+      const res = await fetch(`${MONOBANK_PROXY}/?from=${from}&to=${nowSec}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        updateMonoSyncStatusText('⚠️ Помилка синхронізації: ' + (err.error || res.status));
+        return;
+      }
+      const newExpenses = await res.json();
+
+      let addedCount = 0;
+      newExpenses.forEach(item => {
+        if (deletedExpenseIds.has(item.id)) return; // respect user-deleted transactions
+        if (expenses.some(e => e.id === item.id)) return; // already have it
+        expenses.push({
+          id: item.id,
+          date: new Date(item.time * 1000).toISOString().slice(0,10),
+          time: item.time,
+          source: 'mono',
+          amount: item.amount,
+          label: item.description
+        });
+        addedCount++;
+      });
+
+      if (addedCount > 0) saveExpenses();
+      saveObject(MONO_LAST_SYNC_KEY, { at: Date.now(), to: nowSec });
+
+      const timeStr = new Date().toLocaleTimeString('uk-UA', { hour:'2-digit', minute:'2-digit' });
+      updateMonoSyncStatusText(`☁️ Синхронізовано о ${timeStr} · нових витрат: ${addedCount}`);
+      render();
+    } catch (e) {
+      console.error('Monobank sync failed', e);
+      updateMonoSyncStatusText('⚠️ Не вдалось з’єднатись з Monobank');
+    }
+  }
+
+  document.getElementById('syncMonoBtn').addEventListener('click', () => syncMonobank(true));
+
+
   // ---------- Rate sheet ----------
   const rateBackdrop = document.getElementById('rateBackdrop');
   const rateInput = document.getElementById('rateInput');
@@ -831,8 +1031,10 @@
 
     deletedEntryIds = await loadDeletedIds(ENTRIES_DELETED_KEY);
     deletedInventoryIds = await loadDeletedIds(INVENTORY_DELETED_KEY);
+    deletedExpenseIds = await loadDeletedIds(EXPENSES_DELETED_KEY);
     entries = await loadMergedArray(ENTRIES_KEY, deletedEntryIds);
     phoneInventory = await loadMergedArray(INVENTORY_KEY, deletedInventoryIds);
+    expenses = await loadMergedArray(EXPENSES_KEY, deletedExpenseIds);
 
     const savedRate = await loadObject(RATE_KEY, null);
     if (savedRate) {
@@ -847,6 +1049,9 @@
 
     setSource('phone'); setSign('profit');
     render();
+
+    // Auto-sync Monobank expenses every time the app opens (rate-limited internally)
+    syncMonobank(false);
 
     // Auto-refresh rate on load if it's not a recent manual override (< 6h)
     const manualIsFresh = rateSource === 'manual' && rateUpdatedAt && (Date.now() - rateUpdatedAt) < 6*60*60*1000;
