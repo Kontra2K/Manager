@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Ledger — Телефони & Ф'ючерси</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <style>
   :root{
     --ink:#0B0F14;
@@ -156,7 +157,8 @@
 <body>
 <div id="app">
 
-  <div class="tape">
+  <div class="tape" style="position:relative;">
+    <button id="exportExcelBtn" style="position:absolute; top:14px; right:18px; background:var(--surface-2); border:none; color:var(--muted); width:30px; height:30px; border-radius:9px; font-size:14px; cursor:pointer;" title="Експорт в Excel">📥</button>
     <div class="month-row">
       <button class="month-nav" id="prevMonth">‹</button>
       <div class="month-label" id="monthLabel">—</div>
@@ -366,6 +368,7 @@
 
   const SYNC_API = 'https://kontra2k--4f3cf8848f8311f1be091607ee4eb77e.web.val.run';
   const MONOBANK_PROXY = 'https://kontra2k--b1e9ec188f8711f187ee1607ee4eb77e.web.val.run';
+  const EXPORT_API = 'https://kontra2k--5b5cba6cbeb011f1857b1607ee4eb77e.web.val.run';
 
   function getUserId(){
     try {
@@ -935,7 +938,10 @@
         date: new Date().toISOString().slice(0,10),
         source: 'phone',
         label: item.model,
-        amount: profit
+        amount: profit,
+        purchase: item.purchase,
+        repairs: item.repairs,
+        salePrice: amt
       });
       phoneInventory = phoneInventory.filter(i => i.id !== id);
       markDeleted(INVENTORY_DELETED_KEY, deletedInventoryIds, id);
@@ -1097,6 +1103,110 @@
   }
 
   document.getElementById('syncMonoBtn').addEventListener('click', () => syncMonobank(true));
+
+  // ---------- Export to Excel (built client-side, sent via the relay val) ----------
+  const GREEN_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } };
+  const RED_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' } };
+  const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+
+  function styleHeaderRow(row){
+    row.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = HEADER_FILL;
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+  }
+
+  async function buildExportWorkbook(){
+    const workbook = new ExcelJS.Workbook();
+
+    const phoneEntries = entries.filter(e => e.source === 'phone').sort((a,b) => a.date > b.date ? 1 : -1);
+    const futuresEntries = entries.filter(e => e.source === 'futures').sort((a,b) => a.date > b.date ? 1 : -1);
+
+    // ---- Phones sheet ----
+    const phoneSheet = workbook.addWorksheet('Телефони');
+    phoneSheet.columns = [
+      { header: 'Дата', key: 'date', width: 12 },
+      { header: 'Модель', key: 'model', width: 28 },
+      { header: 'Купівля, грн', key: 'purchase', width: 14 },
+      { header: 'Ремонт, грн', key: 'repairs', width: 14 },
+      { header: 'Продаж, грн', key: 'sale', width: 14 },
+      { header: 'Прибуток, грн', key: 'profit', width: 16 },
+    ];
+    styleHeaderRow(phoneSheet.getRow(1));
+
+    let phoneTotal = 0;
+    phoneEntries.forEach(e => {
+      const row = phoneSheet.addRow({
+        date: e.date, model: e.label,
+        purchase: e.purchase ?? '', repairs: e.repairs ?? '', sale: e.salePrice ?? '',
+        profit: e.amount,
+      });
+      row.getCell('profit').fill = e.amount >= 0 ? GREEN_FILL : RED_FILL;
+      phoneTotal += e.amount;
+    });
+    const phoneTotalRow = phoneSheet.addRow({ model: 'РАЗОМ', profit: phoneTotal });
+    phoneTotalRow.font = { bold: true };
+    phoneTotalRow.getCell('profit').fill = phoneTotal >= 0 ? GREEN_FILL : RED_FILL;
+
+    // ---- Futures sheet ----
+    const futuresSheet = workbook.addWorksheet("Ф'ючерси");
+    futuresSheet.columns = [
+      { header: 'Дата', key: 'date', width: 12 },
+      { header: 'Угода', key: 'deal', width: 30 },
+      { header: 'Прибуток/Збиток, $', key: 'amount', width: 20 },
+    ];
+    styleHeaderRow(futuresSheet.getRow(1));
+
+    let futuresTotal = 0, profitsSum = 0, rektSum = 0;
+    futuresEntries.forEach(e => {
+      const row = futuresSheet.addRow({ date: e.date, deal: e.label, amount: e.amount });
+      row.getCell('amount').fill = e.amount >= 0 ? GREEN_FILL : RED_FILL;
+      futuresTotal += e.amount;
+      if (e.amount >= 0) profitsSum += e.amount; else rektSum += e.amount;
+    });
+
+    futuresSheet.addRow({});
+    const summaryHeaderRow = futuresSheet.addRow({ date: 'ПРОФІТІВ', deal: 'РЕКТІВ', amount: 'ТОТАЛ' });
+    summaryHeaderRow.eachCell(cell => { cell.font = { bold: true }; });
+    const summaryRow = futuresSheet.addRow({ date: profitsSum, deal: rektSum, amount: futuresTotal });
+    summaryRow.getCell('date').fill = GREEN_FILL;
+    summaryRow.getCell('deal').fill = RED_FILL;
+    summaryRow.font = { bold: true };
+
+    return await workbook.xlsx.writeBuffer();
+  }
+
+  document.getElementById('exportExcelBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('exportExcelBtn');
+    const original = btn.textContent;
+    btn.textContent = '⏳';
+    btn.disabled = true;
+    try {
+      const buffer = await buildExportWorkbook();
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+
+      const form = new FormData();
+      form.append('userId', USER_ID);
+      form.append('file', blob, 'income_export.xlsx');
+
+      const res = await fetch(EXPORT_API, { method: 'POST', body: form });
+      const result = await res.json();
+
+      if (result.ok) {
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+        btn.textContent = '✅';
+      } else {
+        console.error('Export failed', result);
+        btn.textContent = '⚠️';
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('error');
+      }
+    } catch (e) {
+      console.error('Export request failed', e);
+      btn.textContent = '⚠️';
+    }
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+  });
 
 
   // ---------- Rate sheet ----------
