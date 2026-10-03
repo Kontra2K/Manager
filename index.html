@@ -1117,13 +1117,25 @@
     });
   }
 
+  const ORANGE_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF4B183' } };
+  const GOLD_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFE699' } };
+  const BLUE_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFBDD7EE' } };
+  const THIN_BORDER = { style: 'thin', color: { argb: 'FFB0B0B0' } };
+
   async function buildExportWorkbook(){
     const workbook = new ExcelJS.Workbook();
 
-    const phoneEntries = entries.filter(e => e.source === 'phone').sort((a,b) => a.date > b.date ? 1 : -1);
-    const futuresEntries = entries.filter(e => e.source === 'futures').sort((a,b) => a.date > b.date ? 1 : -1);
+    const monthKey = ymKey(cursor);
+    const monthLabel = MONTHS[cursor.getMonth()] + ' ' + cursor.getFullYear();
 
-    // ---- Phones sheet ----
+    const phoneEntries = entries
+      .filter(e => e.source === 'phone' && e.date.slice(0,7) === monthKey)
+      .sort((a,b) => a.date > b.date ? 1 : -1);
+    const futuresEntries = entries
+      .filter(e => e.source === 'futures' && e.date.slice(0,7) === monthKey)
+      .sort((a,b) => a.date > b.date ? 1 : -1);
+
+    // ---- Phones sheet (unchanged simple table, just scoped to the selected month) ----
     const phoneSheet = workbook.addWorksheet('Телефони');
     phoneSheet.columns = [
       { header: 'Дата', key: 'date', width: 12 },
@@ -1149,30 +1161,74 @@
     phoneTotalRow.font = { bold: true };
     phoneTotalRow.getCell('profit').fill = phoneTotal >= 0 ? GREEN_FILL : RED_FILL;
 
-    // ---- Futures sheet ----
+    // ---- Futures sheet (trading-journal style, scoped to the selected month) ----
     const futuresSheet = workbook.addWorksheet("Ф'ючерси");
     futuresSheet.columns = [
-      { header: 'Дата', key: 'date', width: 12 },
-      { header: 'Угода', key: 'deal', width: 30 },
-      { header: 'Прибуток/Збиток, $', key: 'amount', width: 20 },
+      { key: 'reward', width: 13 },
+      { key: 'reason', width: 42 },
+      { key: 'channel', width: 12 },
+      { key: 'spacer', width: 3 },
+      { key: 'stat1', width: 12 },
+      { key: 'stat2', width: 12 },
+      { key: 'stat3', width: 12 },
+      { key: 'title', width: 16 },
     ];
-    styleHeaderRow(futuresSheet.getRow(1));
 
-    let futuresTotal = 0, profitsSum = 0, rektSum = 0;
+    let profitsSum = 0, rektSum = 0;
+    futuresEntries.forEach(e => { if (e.amount >= 0) profitsSum += e.amount; else rektSum += e.amount; });
+    const total = profitsSum + rektSum;
+
+    // Header row
+    const hdr = futuresSheet.getRow(1);
+    hdr.getCell('reward').value = 'РЕВАРД\\РЕКТ';
+    hdr.getCell('reason').value = 'Причина по якій зайшов в позу';
+    hdr.getCell('channel').value = 'КОЛ В КАНАЛ';
+    hdr.getCell('stat1').value = 'ПРОФІТІВ';
+    hdr.getCell('stat2').value = 'РЕКТІВ';
+    hdr.getCell('stat3').value = 'ТОТАЛ';
+    ['reward','reason','channel'].forEach(k => {
+      const c = hdr.getCell(k);
+      c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      c.fill = HEADER_FILL;
+      c.alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+    hdr.getCell('stat1').fill = GREEN_FILL; hdr.getCell('stat1').font = { bold: true };
+    hdr.getCell('stat2').fill = RED_FILL;   hdr.getCell('stat2').font = { bold: true };
+    hdr.getCell('stat3').fill = GOLD_FILL;  hdr.getCell('stat3').font = { bold: true };
+    ['stat1','stat2','stat3'].forEach(k => hdr.getCell(k).alignment = { horizontal: 'center' });
+
+    // Summary values row
+    const summaryRow = futuresSheet.getRow(2);
+    summaryRow.getCell('stat1').value = profitsSum;
+    summaryRow.getCell('stat2').value = rektSum;
+    summaryRow.getCell('stat3').value = total;
+    summaryRow.getCell('stat1').fill = GREEN_FILL;
+    summaryRow.getCell('stat2').fill = RED_FILL;
+    summaryRow.getCell('stat3').fill = GOLD_FILL;
+    summaryRow.font = { bold: true };
+    ['stat1','stat2','stat3'].forEach(k => summaryRow.getCell(k).alignment = { horizontal: 'center' });
+
+    // Big month title, merged across several rows/columns to the right
+    futuresSheet.mergeCells(1, 8, 8, 8); // column 8 ('title'), rows 1-8
+    const titleCell = futuresSheet.getCell(1, 8);
+    titleCell.value = monthLabel.toUpperCase();
+    titleCell.font = { bold: true, size: 22 };
+    titleCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+
+    // Data rows
     futuresEntries.forEach(e => {
-      const row = futuresSheet.addRow({ date: e.date, deal: e.label, amount: e.amount });
-      row.getCell('amount').fill = e.amount >= 0 ? GREEN_FILL : RED_FILL;
-      futuresTotal += e.amount;
-      if (e.amount >= 0) profitsSum += e.amount; else rektSum += e.amount;
+      const row = futuresSheet.addRow({ reward: e.amount, reason: e.label, channel: '' });
+      row.getCell('reward').fill = e.amount >= 0 ? GREEN_FILL : RED_FILL;
+      row.getCell('reward').font = { bold: true };
+      row.getCell('reward').alignment = { horizontal: 'center' };
+      row.getCell('reason').fill = ORANGE_FILL;
+      row.getCell('channel').border = { top: THIN_BORDER, bottom: THIN_BORDER, left: THIN_BORDER, right: THIN_BORDER };
+      row.getCell('channel').alignment = { horizontal: 'center' };
     });
 
-    futuresSheet.addRow({});
-    const summaryHeaderRow = futuresSheet.addRow({ date: 'ПРОФІТІВ', deal: 'РЕКТІВ', amount: 'ТОТАЛ' });
-    summaryHeaderRow.eachCell(cell => { cell.font = { bold: true }; });
-    const summaryRow = futuresSheet.addRow({ date: profitsSum, deal: rektSum, amount: futuresTotal });
-    summaryRow.getCell('date').fill = GREEN_FILL;
-    summaryRow.getCell('deal').fill = RED_FILL;
-    summaryRow.font = { bold: true };
+    if (futuresEntries.length === 0) {
+      futuresSheet.addRow({ reason: 'Немає угод за цей місяць' });
+    }
 
     return await workbook.xlsx.writeBuffer();
   }
