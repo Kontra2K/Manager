@@ -384,6 +384,9 @@
     } catch(e){ return 'anon_shared'; }
   }
   const USER_ID = getUserId();
+  // Signed proof from Telegram that this request comes from the real account; servers verify it.
+  const INIT_DATA = (tg && tg.initData) ? tg.initData : '';
+  const AUTH_HEADERS = { 'X-Telegram-Init-Data': INIT_DATA };
 
   // ---------- storage: Val Town Blob Storage (real, centralized, syncs across all devices) ----------
   // localStorage is kept only as an instant same-device cache / offline fallback.
@@ -392,7 +395,7 @@
 
   async function remoteGet(key){
     try {
-      const res = await fetch(`${SYNC_API}/?userId=${encodeURIComponent(USER_ID)}&key=${encodeURIComponent(key)}`);
+      const res = await fetch(`${SYNC_API}/?userId=${encodeURIComponent(USER_ID)}&key=${encodeURIComponent(key)}`, { headers: AUTH_HEADERS });
       if (!res.ok) return null;
       return await res.json();
     } catch(e){ console.error('remoteGet failed for', key, e); return null; }
@@ -401,7 +404,7 @@
     try {
       await fetch(`${SYNC_API}/?userId=${encodeURIComponent(USER_ID)}&key=${encodeURIComponent(key)}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
         body: JSON.stringify(value)
       });
     } catch(e){ console.error('remoteSet failed for', key, e); }
@@ -1066,7 +1069,7 @@
     const from = lastSync && lastSync.to ? lastSync.to : (nowSec - 31*24*60*60);
 
     try {
-      const res = await fetch(`${MONOBANK_PROXY}/?from=${from}&to=${nowSec}`);
+      const res = await fetch(`${MONOBANK_PROXY}/?from=${from}&to=${nowSec}`, { headers: AUTH_HEADERS });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         updateMonoSyncStatusText('⚠️ Помилка синхронізації: ' + (err.error || res.status));
@@ -1246,7 +1249,7 @@
       form.append('userId', USER_ID);
       form.append('file', blob, 'income_export.xlsx');
 
-      const res = await fetch(EXPORT_API, { method: 'POST', body: form });
+      const res = await fetch(EXPORT_API, { method: 'POST', headers: AUTH_HEADERS, body: form });
       const result = await res.json();
 
       if (result.ok) {
